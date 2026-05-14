@@ -1,8 +1,10 @@
 import json
+import math
 import queue
 import random
 import shutil
 import subprocess
+import tempfile
 import threading
 from dataclasses import dataclass
 from pathlib import Path
@@ -15,107 +17,107 @@ VIDEO_EXTS = {".mp4", ".mov", ".mkv", ".avi"}
 
 @dataclass
 class ProcessResult:
-    """Kết quả xử lý của một video."""
-
     video: Path
     output: Path | None
     success: bool
+    playlist_txt: Path | None = None
     error: str | None = None
 
 
 class MusicMergeApp:
-    """Ứng dụng desktop ghép nhạc hàng loạt vào video."""
-
     def __init__(self, root: tk.Tk):
         self.root = root
-        self.root.title("Batch Video Music Merger")
-        self.root.geometry("920x650")
+        self.root.title("Batch Video Music Playlist Merger")
+        self.root.geometry("980x760")
 
-        # Giá trị từ UI
         self.music_folder = tk.StringVar()
         self.keep_original_audio = tk.BooleanVar(value=True)
         self.music_volume = tk.DoubleVar(value=0.6)
         self.fade_seconds = tk.DoubleVar(value=1.0)
         self.assignment_mode = tk.StringVar(value="unique_random")
 
-        # Trạng thái runtime
+        self.songs_per_video = tk.IntVar(value=30)
+        self.target_hours = tk.IntVar(value=0)
+        self.target_minutes = tk.IntVar(value=0)
+        self.loop_video_to_playlist = tk.BooleanVar(value=True)
+        self.cut_video_if_longer = tk.BooleanVar(value=True)
+        self.export_playlist_txt = tk.BooleanVar(value=True)
+        self.normalize_audio_44k = tk.BooleanVar(value=True)
+
         self.video_files: list[Path] = []
         self.results: list[ProcessResult] = []
         self.worker_queue: queue.Queue = queue.Queue()
         self.processing = False
 
         self._build_ui()
-        self._check_ffmpeg_available(show_popup=False)
 
     def _build_ui(self):
         frame = ttk.Frame(self.root, padding=14)
         frame.pack(fill="both", expand=True)
 
         ttk.Label(frame, text="1) Chọn thư mục nhạc:").pack(anchor="w")
-        music_row = ttk.Frame(frame)
-        music_row.pack(fill="x", pady=6)
-        ttk.Entry(music_row, textvariable=self.music_folder).pack(side="left", fill="x", expand=True)
-        ttk.Button(music_row, text="Browse", command=self._pick_music_folder).pack(side="left", padx=6)
+        row = ttk.Frame(frame); row.pack(fill="x", pady=4)
+        ttk.Entry(row, textvariable=self.music_folder).pack(side="left", fill="x", expand=True)
+        ttk.Button(row, text="Browse", command=self._pick_music_folder).pack(side="left", padx=6)
 
-        ttk.Label(frame, text="2) Chọn nhiều video:").pack(anchor="w", pady=(8, 0))
-        btn_row = ttk.Frame(frame)
-        btn_row.pack(fill="x", pady=6)
-        ttk.Button(btn_row, text="Chọn video", command=self._pick_videos).pack(side="left")
-        ttk.Button(btn_row, text="Xóa danh sách", command=self._clear_videos).pack(side="left", padx=6)
-
-        self.video_listbox = tk.Listbox(frame, height=9)
-        self.video_listbox.pack(fill="both", expand=False, pady=(0, 10))
+        ttk.Label(frame, text="2) Chọn nhiều video:").pack(anchor="w", pady=(6, 0))
+        row = ttk.Frame(frame); row.pack(fill="x", pady=4)
+        ttk.Button(row, text="Chọn video", command=self._pick_videos).pack(side="left")
+        ttk.Button(row, text="Xóa danh sách", command=self._clear_videos).pack(side="left", padx=6)
+        self.video_listbox = tk.Listbox(frame, height=7)
+        self.video_listbox.pack(fill="both", pady=(0, 8))
 
         mode_group = ttk.LabelFrame(frame, text="3) Chế độ chọn nhạc")
         mode_group.pack(fill="x", pady=6)
-        ttk.Radiobutton(
-            mode_group,
-            text="Random không trùng lặp đến khi hết danh sách",
-            variable=self.assignment_mode,
-            value="unique_random",
-        ).pack(anchor="w", pady=2)
-        ttk.Radiobutton(
-            mode_group,
-            text="Random hoàn toàn",
-            variable=self.assignment_mode,
-            value="full_random",
-        ).pack(anchor="w", pady=2)
-        ttk.Radiobutton(
-            mode_group,
-            text="Ghép nhạc theo thứ tự danh sách",
-            variable=self.assignment_mode,
-            value="ordered",
-        ).pack(anchor="w", pady=2)
+        ttk.Radiobutton(mode_group, text="Random không trùng lặp", variable=self.assignment_mode, value="unique_random").pack(anchor="w")
+        ttk.Radiobutton(mode_group, text="Random hoàn toàn", variable=self.assignment_mode, value="full_random").pack(anchor="w")
+        ttk.Radiobutton(mode_group, text="Theo thứ tự danh sách", variable=self.assignment_mode, value="ordered").pack(anchor="w")
 
-        audio_group = ttk.LabelFrame(frame, text="4) Âm thanh")
-        audio_group.pack(fill="x", pady=6)
-        ttk.Checkbutton(audio_group, text="Giữ âm thanh gốc của video", variable=self.keep_original_audio).pack(anchor="w", pady=2)
+        cfg = ttk.LabelFrame(frame, text="4) Cấu hình playlist/video")
+        cfg.pack(fill="x", pady=6)
 
-        volume_row = ttk.Frame(audio_group)
-        volume_row.pack(fill="x", pady=2)
-        ttk.Label(volume_row, text="Âm lượng nhạc nền (0.0 - 2.0):").pack(side="left")
-        ttk.Spinbox(volume_row, from_=0.0, to=2.0, increment=0.1, textvariable=self.music_volume, width=8).pack(side="left", padx=8)
+        row = ttk.Frame(cfg); row.pack(fill="x", pady=2)
+        ttk.Label(row, text="Số bài hát cho mỗi video:").pack(side="left")
+        ttk.Spinbox(row, from_=1, to=9999, textvariable=self.songs_per_video, width=8).pack(side="left", padx=8)
 
-        fade_row = ttk.Frame(audio_group)
-        fade_row.pack(fill="x", pady=2)
-        ttk.Label(fade_row, text="Fade in/out (giây):").pack(side="left")
-        ttk.Spinbox(fade_row, from_=0.0, to=8.0, increment=0.2, textvariable=self.fade_seconds, width=8).pack(side="left", padx=8)
+        row = ttk.Frame(cfg); row.pack(fill="x", pady=2)
+        ttk.Label(row, text="Thời lượng mục tiêu: Giờ").pack(side="left")
+        ttk.Spinbox(row, from_=0, to=24, textvariable=self.target_hours, width=5).pack(side="left", padx=4)
+        ttk.Label(row, text="Phút").pack(side="left")
+        ttk.Spinbox(row, from_=0, to=59, textvariable=self.target_minutes, width=5).pack(side="left", padx=4)
 
-        action_row = ttk.Frame(frame)
-        action_row.pack(fill="x", pady=(10, 6))
-        ttk.Button(action_row, text="Kiểm tra FFmpeg", command=lambda: self._check_ffmpeg_available(show_popup=True)).pack(side="left")
-        self.start_btn = ttk.Button(action_row, text="Bắt đầu ghép", command=self._start_processing)
+        ttk.Checkbutton(cfg, text="Loop video để khớp thời lượng playlist nhạc", variable=self.loop_video_to_playlist).pack(anchor="w")
+        ttk.Checkbutton(cfg, text="Nếu video dài hơn playlist thì cắt video theo playlist", variable=self.cut_video_if_longer).pack(anchor="w")
+        ttk.Checkbutton(cfg, text="Xuất file TXT playlist", variable=self.export_playlist_txt).pack(anchor="w")
+        ttk.Checkbutton(cfg, text="Chuẩn hóa audio về 44100 Hz (stereo)", variable=self.normalize_audio_44k).pack(anchor="w")
+
+        audio = ttk.LabelFrame(frame, text="5) Âm thanh")
+        audio.pack(fill="x", pady=6)
+        ttk.Checkbutton(audio, text="Giữ âm thanh gốc của video", variable=self.keep_original_audio).pack(anchor="w")
+        row = ttk.Frame(audio); row.pack(fill="x", pady=2)
+        ttk.Label(row, text="Âm lượng nhạc nền (0.0 - 2.0):").pack(side="left")
+        ttk.Spinbox(row, from_=0.0, to=2.0, increment=0.1, textvariable=self.music_volume, width=8).pack(side="left", padx=8)
+        row = ttk.Frame(audio); row.pack(fill="x", pady=2)
+        ttk.Label(row, text="Fade in/out (giây):").pack(side="left")
+        ttk.Spinbox(row, from_=0.0, to=8.0, increment=0.2, textvariable=self.fade_seconds, width=8).pack(side="left", padx=8)
+
+        row = ttk.Frame(frame); row.pack(fill="x", pady=6)
+        ttk.Button(row, text="Kiểm tra FFmpeg", command=lambda: self._check_ffmpeg_available(True)).pack(side="left")
+        self.start_btn = ttk.Button(row, text="Bắt đầu ghép playlist", command=self._start_processing)
         self.start_btn.pack(side="left", padx=8)
 
         self.progress = ttk.Progressbar(frame, orient="horizontal", mode="determinate")
         self.progress.pack(fill="x", pady=(4, 8))
-
         self.status_label = ttk.Label(frame, text="Sẵn sàng")
         self.status_label.pack(anchor="w")
 
-        ttk.Label(frame, text="Kết quả:").pack(anchor="w", pady=(8, 0))
+        ttk.Label(frame, text="Log / Kết quả:").pack(anchor="w", pady=(6, 0))
         self.result_text = tk.Text(frame, height=12)
         self.result_text.pack(fill="both", expand=True)
+
+    def _append_log(self, text: str):
+        self.result_text.insert(tk.END, text + "\n")
+        self.result_text.see(tk.END)
 
     def _pick_music_folder(self):
         folder = filedialog.askdirectory(title="Chọn thư mục nhạc")
@@ -123,10 +125,7 @@ class MusicMergeApp:
             self.music_folder.set(folder)
 
     def _pick_videos(self):
-        files = filedialog.askopenfilenames(
-            title="Chọn video",
-            filetypes=[("Video files", "*.mp4 *.mov *.mkv *.avi")],
-        )
+        files = filedialog.askopenfilenames(title="Chọn video", filetypes=[("Video files", "*.mp4 *.mov *.mkv *.avi")])
         for file in files:
             path = Path(file)
             if path.suffix.lower() in VIDEO_EXTS and path not in self.video_files:
@@ -137,37 +136,25 @@ class MusicMergeApp:
         self.video_files.clear()
         self.video_listbox.delete(0, tk.END)
 
-    def _check_ffmpeg_available(self, show_popup: bool = True) -> bool:
-        has_ffmpeg = shutil.which("ffmpeg") is not None and shutil.which("ffprobe") is not None
-        if show_popup:
-            if has_ffmpeg:
-                messagebox.showinfo("FFmpeg", "Đã tìm thấy ffmpeg và ffprobe trong PATH.")
-            else:
-                messagebox.showerror(
-                    "Thiếu FFmpeg",
-                    "Không tìm thấy FFmpeg.\n\n"
-                    "Cài FFmpeg:\n"
-                    "- Windows: tải từ https://ffmpeg.org/download.html rồi thêm vào PATH.\n"
-                    "- macOS: brew install ffmpeg\n"
-                    "- Ubuntu/Debian: sudo apt update && sudo apt install ffmpeg\n"
-                    "Sau đó mở lại tool.",
-                )
-        return has_ffmpeg
+    def _check_ffmpeg_available(self, show_popup=True) -> bool:
+        ok = shutil.which("ffmpeg") is not None and shutil.which("ffprobe") is not None
+        if show_popup and not ok:
+            messagebox.showerror("Thiếu FFmpeg", "Không tìm thấy FFmpeg.\nWindows: tải từ ffmpeg.org và thêm PATH\nmacOS: brew install ffmpeg\nUbuntu: sudo apt install ffmpeg")
+        if show_popup and ok:
+            messagebox.showinfo("FFmpeg", "Đã tìm thấy ffmpeg và ffprobe trong PATH.")
+        return ok
 
     def _run_json_ffprobe(self, path: Path, entries: str) -> dict:
-        """Gọi ffprobe và trả JSON đã parse."""
         cmd = ["ffprobe", "-v", "error", "-show_entries", entries, "-of", "json", str(path)]
-        result = subprocess.run(cmd, capture_output=True, text=True, check=True)
-        return json.loads(result.stdout)
+        r = subprocess.run(cmd, capture_output=True, text=True, check=True)
+        return json.loads(r.stdout)
 
-    def _get_duration(self, media_path: Path) -> float:
-        payload = self._run_json_ffprobe(media_path, "format=duration")
-        return float(payload["format"]["duration"])
+    def _get_duration(self, path: Path) -> float:
+        return float(self._run_json_ffprobe(path, "format=duration")["format"]["duration"])
 
-    def _video_has_audio_stream(self, media_path: Path) -> bool:
-        payload = self._run_json_ffprobe(media_path, "stream=codec_type")
-        streams = payload.get("streams", [])
-        return any(stream.get("codec_type") == "audio" for stream in streams)
+    def _video_has_audio_stream(self, path: Path) -> bool:
+        streams = self._run_json_ffprobe(path, "stream=codec_type").get("streams", [])
+        return any(s.get("codec_type") == "audio" for s in streams)
 
     def _collect_music_files(self) -> list[Path]:
         folder = Path(self.music_folder.get())
@@ -176,89 +163,164 @@ class MusicMergeApp:
         return sorted([f for f in folder.iterdir() if f.is_file() and f.suffix.lower() in MUSIC_EXTS])
 
     def _build_output_path(self, video_path: Path) -> Path:
-        candidate = video_path.with_name(f"{video_path.stem}_with_music.mp4")
-        if not candidate.exists():
-            return candidate
-        index = 1
+        base = video_path.with_name(f"{video_path.stem}_with_music.mp4")
+        if not base.exists():
+            return base
+        i = 1
         while True:
-            new_path = video_path.with_name(f"{video_path.stem}_with_music_{index}.mp4")
-            if not new_path.exists():
-                return new_path
-            index += 1
+            p = video_path.with_name(f"{video_path.stem}_with_music_{i}.mp4")
+            if not p.exists():
+                return p
+            i += 1
 
-    def _choose_music_for_videos(self, videos: list[Path], musics: list[Path]) -> list[Path]:
+    def _build_playlist_txt_path(self, video_path: Path) -> Path:
+        base = video_path.with_name(f"{video_path.stem}_playlist.txt")
+        if not base.exists():
+            return base
+        i = 1
+        while True:
+            p = video_path.with_name(f"{video_path.stem}_playlist_{i}.txt")
+            if not p.exists():
+                return p
+            i += 1
+
+    def _select_songs(self, musics: list[Path], count: int) -> list[Path]:
         mode = self.assignment_mode.get()
         if mode == "ordered":
-            return [musics[i % len(musics)] for i in range(len(videos))]
+            return [musics[i % len(musics)] for i in range(count)]
         if mode == "full_random":
-            return [random.choice(musics) for _ in videos]
-
-        # unique_random: không trùng lặp cho đến khi hết danh sách.
-        chosen: list[Path] = []
+            return [random.choice(musics) for _ in range(count)]
+        selected: list[Path] = []
         pool: list[Path] = []
-        for _ in videos:
+        for _ in range(count):
             if not pool:
                 pool = musics.copy()
                 random.shuffle(pool)
-            chosen.append(pool.pop())
-        return chosen
+            selected.append(pool.pop())
+        return selected
 
-    def _build_filter(self, video_duration: float) -> tuple[str, float, float]:
-        """Chuẩn hóa giá trị người dùng nhập và tạo filter âm lượng/fade."""
-        fade_sec = max(0.0, min(float(self.fade_seconds.get()), video_duration))
-        volume = max(0.0, min(float(self.music_volume.get()), 2.0))
-        fade_out_start = max(0.0, video_duration - fade_sec)
-        music_filter = f"volume={volume},afade=t=in:st=0:d={fade_sec},afade=t=out:st={fade_out_start}:d={fade_sec}"
-        return music_filter, fade_sec, volume
+    @staticmethod
+    def _ts(seconds: float) -> str:
+        s = int(seconds)
+        h, r = divmod(s, 3600)
+        m, sec = divmod(r, 60)
+        return f"{h:02d}:{m:02d}:{sec:02d}" if h else f"{m:02d}:{sec:02d}"
 
-    def _process_one(self, video: Path, music: Path) -> ProcessResult:
+    def _target_seconds(self) -> int:
+        return max(0, self.target_hours.get()) * 3600 + max(0, self.target_minutes.get()) * 60
+
+    def _expand_to_target(self, songs: list[Path], durations: list[float], target_seconds: int) -> tuple[list[Path], list[float]]:
+        if target_seconds <= 0:
+            return songs, durations
+        base_songs = songs.copy()
+        base_durations = durations.copy()
+        total = sum(durations)
+        while total < target_seconds:
+            songs.extend(base_songs)
+            durations.extend(base_durations)
+            total = sum(durations)
+        return songs, durations
+
+    def _build_concat_file(self, songs: list[Path], txt_path: Path):
+        # Dùng ffconcat để nối file an toàn với đường dẫn có dấu/khoảng trắng.
+        with txt_path.open("w", encoding="utf-8") as f:
+            f.write("ffconcat version 1.0\n")
+            for s in songs:
+                escaped = str(s).replace("'", "'\\''")
+                f.write(f"file '{escaped}'\n")
+
+    def _write_playlist_txt(self, txt_path: Path, src_video: Path, out_video: Path, songs: list[Path], durations: list[float], total_seconds: float):
+        lines = [
+            f"Tên video gốc: {src_video.name}",
+            f"Video xuất: {out_video.name}",
+            f"Tổng thời lượng: {self._ts(total_seconds)}",
+            "",
+            "Danh sách bài hát:",
+        ]
+        cursor = 0.0
+        for song, dur in zip(songs, durations):
+            lines.append(f"{self._ts(cursor)} {song.name}")
+            cursor += dur
+        txt_path.write_text("\n".join(lines), encoding="utf-8")
+
+    def _process_one(self, video: Path, music_files: list[Path]) -> ProcessResult:
+        temp_files: list[Path] = []
         try:
-            output = self._build_output_path(video)
-            video_duration = self._get_duration(video)
-            has_video_audio = self._video_has_audio_stream(video)
-            music_filter, _, _ = self._build_filter(video_duration)
+            songs = self._select_songs(music_files, max(1, self.songs_per_video.get()))
+            durations = [self._get_duration(s) for s in songs]
+            songs, durations = self._expand_to_target(songs, durations, self._target_seconds())
 
-            # Nếu người dùng muốn giữ âm gốc nhưng video không có audio stream,
-            # fallback sang chỉ dùng nhạc nền để tránh lỗi map/filter.
-            use_original_audio = self.keep_original_audio.get() and has_video_audio
+            playlist_duration = sum(durations)
+            target_seconds = self._target_seconds()
+            output_duration = target_seconds if target_seconds > 0 else playlist_duration
 
-            if use_original_audio:
-                filter_complex = f"[1:a]{music_filter}[bg];[0:a][bg]amix=inputs=2:duration=first:dropout_transition=2[mix]"
-                map_audio = "[mix]"
-            else:
-                filter_complex = f"[1:a]{music_filter}[mix]"
-                map_audio = "[mix]"
+            out_video = self._build_output_path(video)
+            playlist_txt = self._build_playlist_txt_path(video) if self.export_playlist_txt.get() else None
 
-            cmd = [
-                "ffmpeg",
-                "-y",
-                "-i",
-                str(video),
-                "-stream_loop",
-                "-1",
-                "-i",
-                str(music),
-                "-filter_complex",
-                filter_complex,
-                "-map",
-                "0:v:0",
-                "-map",
-                map_audio,
-                "-t",
-                f"{video_duration}",
-                "-c:v",
-                "copy",
-                "-c:a",
-                "aac",
-                "-shortest",
-                str(output),
-            ]
+            self.worker_queue.put(("log", f"- Chọn {len(songs)} bài cho {video.name}"))
+            self.worker_queue.put(("log", f"- Tổng thời lượng playlist: {self._ts(output_duration)}"))
+            self.worker_queue.put(("log", "- Danh sách bài: " + ", ".join([s.name for s in songs[:10]]) + (" ..." if len(songs) > 10 else "")))
 
-            subprocess.run(cmd, capture_output=True, text=True, check=True)
-            return ProcessResult(video=video, output=output, success=True)
+            with tempfile.TemporaryDirectory(prefix="music_merge_") as td:
+                temp_dir = Path(td)
+                concat_list = temp_dir / "concat_list.txt"
+                playlist_wav = temp_dir / "playlist.wav"
+                temp_files.extend([concat_list, playlist_wav])
+
+                self._build_concat_file(songs, concat_list)
+
+                concat_cmd = ["ffmpeg", "-y", "-safe", "0", "-f", "concat", "-i", str(concat_list), "-vn"]
+                if self.normalize_audio_44k.get():
+                    concat_cmd += ["-ac", "2", "-ar", "44100"]
+                concat_cmd += [str(playlist_wav)]
+                subprocess.run(concat_cmd, capture_output=True, text=True, check=True)
+
+                video_duration = self._get_duration(video)
+                has_audio = self._video_has_audio_stream(video)
+                volume = max(0.0, min(float(self.music_volume.get()), 2.0))
+                fade = max(0.0, min(float(self.fade_seconds.get()), output_duration))
+                fade_out_start = max(0.0, output_duration - fade)
+                music_filter = f"volume={volume},afade=t=in:st=0:d={fade},afade=t=out:st={fade_out_start}:d={fade}"
+                if self.normalize_audio_44k.get():
+                    music_filter = music_filter + ",aformat=sample_rates=44100:channel_layouts=stereo"
+
+                loop_needed = self.loop_video_to_playlist.get() and output_duration > video_duration
+                stream_loop_value = str(max(0, math.ceil(output_duration / video_duration) - 1)) if loop_needed else "0"
+                self.worker_queue.put(("log", f"- Đang loop video: {'Có' if loop_needed else 'Không'}"))
+
+                use_mix = self.keep_original_audio.get() and has_audio
+                if use_mix:
+                    filter_complex = f"[1:a]{music_filter}[bg];[0:a][bg]amix=inputs=2:duration=first:dropout_transition=2[mix]"
+                    map_audio = "[mix]"
+                else:
+                    filter_complex = f"[1:a]{music_filter}[mix]"
+                    map_audio = "[mix]"
+
+                cmd = ["ffmpeg", "-y"]
+                if loop_needed:
+                    cmd += ["-stream_loop", stream_loop_value]
+                cmd += ["-i", str(video), "-i", str(playlist_wav), "-filter_complex", filter_complex, "-map", "0:v:0", "-map", map_audio]
+
+                if (not loop_needed) and video_duration > output_duration and not self.cut_video_if_longer.get():
+                    cmd += ["-t", f"{video_duration}"]
+                else:
+                    cmd += ["-t", f"{output_duration}"]
+
+                cmd += ["-c:v", "copy", "-c:a", "aac"]
+                if self.normalize_audio_44k.get():
+                    cmd += ["-ac", "2", "-ar", "44100"]
+                cmd += [str(out_video)]
+                subprocess.run(cmd, capture_output=True, text=True, check=True)
+
+            if self.export_playlist_txt.get() and playlist_txt is not None:
+                self._write_playlist_txt(playlist_txt, video, out_video, songs, durations, output_duration)
+                self.worker_queue.put(("log", f"- TXT playlist: {playlist_txt}"))
+
+            self.worker_queue.put(("log", f"- Video xuất: {out_video}"))
+            return ProcessResult(video=video, output=out_video, success=True, playlist_txt=playlist_txt)
         except subprocess.CalledProcessError as exc:
-            return ProcessResult(video=video, output=None, success=False, error=exc.stderr.strip()[:1000])
-        except Exception as exc:  # noqa: BLE001
+            return ProcessResult(video=video, output=None, success=False, error=exc.stderr.strip()[:1200])
+        except Exception as exc:
             return ProcessResult(video=video, output=None, success=False, error=str(exc))
 
     def _start_processing(self):
@@ -270,10 +332,9 @@ class MusicMergeApp:
         if not self.video_files:
             messagebox.showwarning("Thiếu video", "Vui lòng chọn ít nhất một video.")
             return
-
         music_files = self._collect_music_files()
         if not music_files:
-            messagebox.showwarning("Thiếu nhạc", "Không tìm thấy file nhạc hợp lệ trong thư mục đã chọn.")
+            messagebox.showwarning("Thiếu nhạc", "Không tìm thấy file nhạc hợp lệ.")
             return
 
         self.results.clear()
@@ -283,16 +344,14 @@ class MusicMergeApp:
         self.start_btn.config(state="disabled")
         self.processing = True
 
-        assignments = self._choose_music_for_videos(self.video_files, music_files)
+        t = threading.Thread(target=self._worker, args=(self.video_files.copy(), music_files), daemon=True)
+        t.start()
+        self.root.after(150, self._poll_queue)
 
-        thread = threading.Thread(target=self._worker, args=(self.video_files.copy(), assignments), daemon=True)
-        thread.start()
-        self.root.after(200, self._poll_queue)
-
-    def _worker(self, videos: list[Path], musics: list[Path]):
-        for index, (video, music) in enumerate(zip(videos, musics), start=1):
-            self.worker_queue.put(("status", f"Đang xử lý {index}/{len(videos)}: {video.name} | Nhạc: {music.name}"))
-            result = self._process_one(video, music)
+    def _worker(self, videos: list[Path], music_files: list[Path]):
+        for i, video in enumerate(videos, start=1):
+            self.worker_queue.put(("status", f"Đang xử lý {i}/{len(videos)}: {video.name}"))
+            result = self._process_one(video, music_files)
             self.worker_queue.put(("result", result))
         self.worker_queue.put(("done", None))
 
@@ -302,34 +361,33 @@ class MusicMergeApp:
                 kind, data = self.worker_queue.get_nowait()
                 if kind == "status":
                     self.status_label.config(text=data)
+                    self._append_log(data)
+                elif kind == "log":
+                    self._append_log(data)
                 elif kind == "result":
                     self.results.append(data)
                     self.progress["value"] = len(self.results)
                 elif kind == "done":
-                    self._on_finished()
-                    return
+                    self._on_finished(); return
         except queue.Empty:
             pass
-
         if self.processing:
-            self.root.after(200, self._poll_queue)
+            self.root.after(150, self._poll_queue)
 
     def _on_finished(self):
         self.processing = False
         self.start_btn.config(state="normal")
-
         success = [r for r in self.results if r.success]
         failed = [r for r in self.results if not r.success]
-
         self.status_label.config(text=f"Hoàn tất. Thành công: {len(success)} | Lỗi: {len(failed)}")
-
-        self.result_text.insert(tk.END, "=== VIDEO XUẤT THÀNH CÔNG ===\n")
+        self._append_log("\n=== THÀNH CÔNG ===")
         for item in success:
-            self.result_text.insert(tk.END, f"✓ {item.video.name} -> {item.output}\n")
-
-        self.result_text.insert(tk.END, "\n=== VIDEO LỖI ===\n")
+            self._append_log(f"✓ {item.video.name} -> {item.output}")
+            if item.playlist_txt:
+                self._append_log(f"  Playlist TXT: {item.playlist_txt}")
+        self._append_log("\n=== LỖI ===")
         for item in failed:
-            self.result_text.insert(tk.END, f"✗ {item.video.name}: {item.error}\n")
+            self._append_log(f"✗ {item.video.name}: {item.error}")
 
 
 def main():

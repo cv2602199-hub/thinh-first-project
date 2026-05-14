@@ -1,51 +1,29 @@
-# Batch Video Music Merger (Local Tool)
+# Batch Video Music Playlist Merger
 
-Tool desktop bằng **Python + Tkinter + FFmpeg** để ghép nhạc nền vào nhiều video hàng loạt.
+Tool desktop local bằng **Python + Tkinter + FFmpeg** để tạo video playlist dài (1h/2h/3h...) từ nhiều bài nhạc.
 
-## Tính năng
-
-- Chọn thư mục nhạc, hỗ trợ: `mp3`, `wav`, `m4a`, `aac`.
-- Chọn nhiều video cùng lúc, hỗ trợ: `mp4`, `mov`, `mkv`, `avi`.
-- Tự động ghép 1 bài nhạc vào mỗi video theo 3 chế độ:
-  - Random không trùng lặp cho đến khi hết danh sách.
-  - Random hoàn toàn.
-  - Ghép theo thứ tự danh sách.
-- Tự ép thời lượng nhạc theo video:
-  - Nhạc dài hơn video: tự cắt vừa bằng video.
-  - Nhạc ngắn hơn video: tự lặp cho đủ thời lượng video.
-- Tùy chọn âm thanh:
-  - Giữ hoặc tắt âm thanh gốc của video.
-  - Điều chỉnh âm lượng nhạc nền.
-  - Fade in / fade out nhẹ.
-- Lưu file mới ngay cạnh video gốc.
-- Tên xuất: `ten-video-goc_with_music.mp4`.
-- Không ghi đè: tự tăng số `_1`, `_2`, ... nếu trùng tên.
-- Có thanh tiến trình và danh sách kết quả thành công/lỗi.
-
----
-
-## Yêu cầu
-
-- Python 3.10+
-- FFmpeg (có cả `ffmpeg` và `ffprobe` trong `PATH`)
+## Tính năng chính
+- Chọn thư mục nhạc (`mp3`, `wav`, `m4a`, `aac`) và chọn nhiều video (`mp4`, `mov`, `mkv`, `avi`).
+- Chọn **số bài hát cho mỗi video** (ví dụ 30 bài).
+- 3 chế độ chọn nhạc:
+  - Random không trùng lặp (hết danh sách sẽ tự vòng mới)
+  - Random hoàn toàn
+  - Theo thứ tự danh sách
+- Tạo playlist audio bằng cách nối nhiều bài hát theo thứ tự đã chọn.
+- Có thể nhập **thời lượng mục tiêu (giờ/phút)**:
+  - Nếu chưa đủ thời lượng: tự lặp playlist cho đủ gần mục tiêu.
+  - Nếu dài hơn mục tiêu: cắt đúng thời lượng mục tiêu.
+- Tùy chọn **loop video** để khớp thời lượng playlist audio.
+- Nếu video dài hơn playlist: tùy chọn cắt video theo playlist hoặc giữ nguyên.
+- Tùy chọn giữ/tắt âm thanh gốc video, chỉnh volume nhạc nền, fade in/out.
+- Tùy chọn chuẩn hóa audio về **44100 Hz, stereo**, xuất AAC cho MP4.
+- Tùy chọn xuất file TXT playlist timestamp để dán mô tả YouTube.
+- Không ghi đè file cũ: tự thêm `_1`, `_2`, ...
 
 ## Cài FFmpeg
-
-### Windows
-1. Tải bản build tại: https://ffmpeg.org/download.html
-2. Giải nén.
-3. Thêm thư mục `bin` (chứa `ffmpeg.exe`) vào biến môi trường `PATH`.
-4. Mở lại terminal / app.
-
-### macOS
-```bash
-brew install ffmpeg
-```
-
-### Ubuntu / Debian
-```bash
-sudo apt update && sudo apt install ffmpeg
-```
+- Windows: tải từ https://ffmpeg.org/download.html và thêm vào PATH.
+- macOS: `brew install ffmpeg`
+- Ubuntu/Debian: `sudo apt update && sudo apt install ffmpeg`
 
 Kiểm tra:
 ```bash
@@ -53,38 +31,43 @@ ffmpeg -version
 ffprobe -version
 ```
 
----
-
-## Cách chạy tool
-
-Trong thư mục dự án:
-
+## Cách chạy
 ```bash
 python app.py
 ```
-
-(Nếu máy dùng `python3`):
-
+Hoặc:
 ```bash
 python3 app.py
 ```
 
----
+## Cách dùng nhanh
+1. Chọn thư mục nhạc.
+2. Chọn một hoặc nhiều video nền.
+3. Nhập **Số bài hát cho mỗi video** (ví dụ: 30).
+4. (Tùy chọn) Nhập **Thời lượng mục tiêu** (ví dụ: 3 giờ 0 phút).
+5. Bật **Loop video để khớp thời lượng playlist nhạc**.
+6. Chọn các tùy chọn audio và bấm **Bắt đầu ghép playlist**.
 
-## Hướng dẫn sử dụng
+## Ví dụ làm video dài
+- **1 giờ**: đặt mục tiêu `1 giờ 0 phút`, số bài 15–20 (tùy độ dài bài), bật loop video.
+- **2 giờ**: đặt mục tiêu `2 giờ 0 phút`, số bài 25–40, bật loop video.
+- **3 giờ**: đặt mục tiêu `3 giờ 0 phút`, số bài 30+, bật loop video.
 
-1. Bấm **Browse** để chọn thư mục nhạc.
-2. Bấm **Chọn video** để chọn nhiều video.
-3. Chọn chế độ gán nhạc.
-4. Cấu hình âm thanh:
-   - Giữ/tắt âm thanh gốc video.
-   - Âm lượng nhạc nền.
-   - Thời lượng fade in/out.
-5. Bấm **Bắt đầu ghép**.
-6. Theo dõi thanh tiến trình và danh sách kết quả.
+Tool sẽ tự lặp danh sách bài nếu chưa đủ thời lượng mục tiêu.
 
-## Ghi chú
+## File TXT playlist
+Mỗi video xuất có thể đi kèm file:
+- `ten-video-goc_playlist.txt`
 
-- Tool xử lý tuần tự từng video để dễ theo dõi trạng thái.
-- Video đầu ra luôn mã âm thanh AAC để tương thích tốt.
-- Nếu video không có audio gốc mà chọn "Giữ âm thanh gốc", FFmpeg vẫn có thể trộn nhạc bình thường trong đa số trường hợp.
+Nội dung gồm:
+- Tên video gốc
+- Tên file video xuất
+- Tổng thời lượng
+- Timestamp từng bài theo thứ tự (dùng được cho mô tả YouTube)
+
+Ví dụ:
+```text
+00:00 Song 1.mp3
+04:25 Song 2.mp3
+08:50 Song 3.mp3
+```
