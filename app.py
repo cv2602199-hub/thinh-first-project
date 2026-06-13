@@ -317,19 +317,23 @@ class MusicMergeApp:
         subprocess.run(concat_cmd, capture_output=True, text=True, check=True)
         return playlist_wav
 
-    def _write_playlist_txt(self, txt_path: Path, src_video: Path, out_video: Path, songs: list[Path], durations: list[float], is_priority: list[bool], total_seconds: float):
+    def _write_playlist_txt(self, txt_path: Path, src_video: Path, out_video: Path, songs: list[Path], durations: list[float], is_priority: list[bool], export_duration: float):
         lines = [
             f"Tên video gốc: {src_video.name}",
             f"Video xuất: {out_video.name}",
-            f"Tổng thời lượng: {self._ts(total_seconds)}",
+            f"Tổng thời lượng: {self._ts(export_duration)}",
             "",
             "Danh sách bài hát:",
         ]
-        cursor = 0.0
+        current_seconds = 0.0
         for song, dur, priority in zip(songs, durations, is_priority):
+            # TXT chỉ ghi những bài thực sự bắt đầu trước khi video xuất kết thúc.
+            # Nếu bài cuối bị cắt giữa chừng, timestamp bắt đầu vẫn được giữ lại.
+            if current_seconds >= export_duration:
+                break
             prefix = "[PRIORITY] " if priority else ""
-            lines.append(f"{self._ts(cursor)} {prefix}{song.name}")
-            cursor += dur
+            lines.append(f"{self._ts(current_seconds)} {prefix}{song.name}")
+            current_seconds += dur
         txt_path.write_text("\n".join(lines), encoding="utf-8")
 
     def _process_one(self, video: Path, music_files: list[Path]) -> ProcessResult:
@@ -368,7 +372,12 @@ class MusicMergeApp:
 
                 loop_needed = self.loop_video_to_playlist.get() and output_duration > video_duration
                 stream_loop_value = str(max(0, math.ceil(output_duration / video_duration) - 1)) if loop_needed else "0"
+                if (not loop_needed) and video_duration > output_duration and not self.cut_video_if_longer.get():
+                    export_duration = video_duration
+                else:
+                    export_duration = output_duration
                 self.worker_queue.put(("log", f"- Đang loop video: {'Có' if loop_needed else 'Không'}"))
+                self.worker_queue.put(("log", f"- Thời lượng video xuất: {self._ts(export_duration)}"))
 
                 use_mix = self.keep_original_audio.get() and has_audio
                 if use_mix:
@@ -383,10 +392,7 @@ class MusicMergeApp:
                     cmd += ["-stream_loop", stream_loop_value]
                 cmd += ["-i", str(video), "-i", str(playlist_wav), "-filter_complex", filter_complex, "-map", "0:v:0", "-map", map_audio]
 
-                if (not loop_needed) and video_duration > output_duration and not self.cut_video_if_longer.get():
-                    cmd += ["-t", f"{video_duration}"]
-                else:
-                    cmd += ["-t", f"{output_duration}"]
+                cmd += ["-t", f"{export_duration}"]
 
                 cmd += ["-c:v", "copy", "-c:a", "aac"]
                 if self.normalize_audio_44k.get():
@@ -395,7 +401,7 @@ class MusicMergeApp:
                 subprocess.run(cmd, capture_output=True, text=True, check=True)
 
             if self.export_playlist_txt.get() and playlist_txt is not None:
-                self._write_playlist_txt(playlist_txt, video, out_video, songs, durations, is_priority, output_duration)
+                self._write_playlist_txt(playlist_txt, video, out_video, songs, durations, is_priority, export_duration)
                 self.worker_queue.put(("log", f"- TXT playlist: {playlist_txt}"))
 
             self.worker_queue.put(("log", f"- Video xuất: {out_video}"))
