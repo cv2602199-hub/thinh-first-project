@@ -5,7 +5,7 @@ Tool desktop local bằng **Python + Tkinter + FFmpeg** để tạo video playli
 ## Tính năng chính
 - Chọn thư mục nhạc (`mp3`, `wav`, `m4a`, `aac`, `flac`) và chọn nhiều video (`mp4`, `mov`, `mkv`, `avi`).
 - Chọn **số bài hát cho mỗi video** (ví dụ 30 bài).
-- Thêm **Danh sách ưu tiên** để các bài yêu thích luôn được dùng trước khi random/chọn bài còn lại.
+- Thêm **Danh sách ưu tiên** không giới hạn số bài, chọn số bài ưu tiên cần lấy, random lại thứ tự ưu tiên, và chọn chế độ ưu tiên riêng.
 - 3 chế độ chọn nhạc:
   - Random không trùng lặp (hết danh sách sẽ tự vòng mới)
   - Random hoàn toàn
@@ -44,7 +44,7 @@ python3 app.py
 ## Cách dùng nhanh
 1. Chọn thư mục nhạc.
 2. Chọn một hoặc nhiều video nền.
-3. (Tùy chọn) Bấm **Thêm bài hát ưu tiên** để chọn các bài yêu thích, rồi bật **Ưu tiên danh sách yêu thích**.
+3. (Tùy chọn) Bấm **Thêm bài hát ưu tiên** để chọn các bài yêu thích, nhập **Số bài lấy từ danh sách ưu tiên**, chọn chế độ ưu tiên, rồi bật **Ưu tiên danh sách yêu thích**.
 4. Nhập **Số bài hát cho mỗi video** (ví dụ: 30).
 5. (Tùy chọn) Nhập **Thời lượng mục tiêu** (ví dụ: 3 giờ 0 phút).
 6. Bật **Loop video để khớp thời lượng playlist nhạc**.
@@ -56,6 +56,17 @@ python3 app.py
 - **3 giờ**: đặt mục tiêu `3 giờ 0 phút`, số bài 30+, bật loop video.
 
 Tool sẽ tự lặp danh sách bài nếu chưa đủ thời lượng mục tiêu.
+
+## Danh sách ưu tiên
+
+- Có thể thêm không giới hạn bài hát ưu tiên.
+- **Số bài lấy từ danh sách ưu tiên** quyết định bao nhiêu bài ưu tiên sẽ nằm ở đầu playlist cuối cùng.
+- Nếu số bài ưu tiên lớn hơn tổng số bài/video, tool tự giảm về đúng tổng số bài/video và hiển thị cảnh báo nhẹ.
+- Nút **Random danh sách ưu tiên** đảo thứ tự hiển thị trong Listbox; chế độ **Theo thứ tự** sẽ lấy từ trên xuống dưới theo thứ tự này.
+- Chế độ ưu tiên riêng gồm:
+  - Random không trùng: lấy ngẫu nhiên, hết danh sách thì vòng mới.
+  - Random hoàn toàn: cho phép lặp lại bài.
+  - Theo thứ tự: lấy từ trên xuống dưới trong Listbox.
 
 ## File TXT playlist
 Mỗi video xuất có thể đi kèm file:

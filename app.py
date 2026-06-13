@@ -44,6 +44,9 @@ class MusicMergeApp:
         self.export_playlist_txt = tk.BooleanVar(value=True)
         self.normalize_audio_44k = tk.BooleanVar(value=True)
         self.use_priority_list = tk.BooleanVar(value=True)
+        self.priority_song_count = tk.IntVar(value=30)
+        self.priority_mode = tk.StringVar(value="unique_random")
+        self.priority_total_label = tk.StringVar(value="Tổng số bài ưu tiên: 0")
 
         self.video_files: list[Path] = []
         self.priority_files: list[Path] = []
@@ -78,9 +81,22 @@ class MusicMergeApp:
         priority_group = ttk.LabelFrame(frame, text="4) Danh sách ưu tiên")
         priority_group.pack(fill="x", pady=6)
         ttk.Checkbutton(priority_group, text="Ưu tiên danh sách yêu thích", variable=self.use_priority_list).pack(anchor="w")
+
+        priority_count_row = ttk.Frame(priority_group); priority_count_row.pack(fill="x", pady=2)
+        ttk.Label(priority_count_row, text="Số bài lấy từ danh sách ưu tiên:").pack(side="left")
+        ttk.Spinbox(priority_count_row, from_=0, to=9999, textvariable=self.priority_song_count, width=8).pack(side="left", padx=8)
+        ttk.Label(priority_count_row, textvariable=self.priority_total_label).pack(side="left", padx=8)
+
+        priority_mode_row = ttk.Frame(priority_group); priority_mode_row.pack(fill="x", pady=2)
+        ttk.Label(priority_mode_row, text="Chế độ ưu tiên:").pack(side="left")
+        ttk.Radiobutton(priority_mode_row, text="Random không trùng", variable=self.priority_mode, value="unique_random").pack(side="left", padx=4)
+        ttk.Radiobutton(priority_mode_row, text="Random hoàn toàn", variable=self.priority_mode, value="full_random").pack(side="left", padx=4)
+        ttk.Radiobutton(priority_mode_row, text="Theo thứ tự", variable=self.priority_mode, value="ordered").pack(side="left", padx=4)
+
         priority_buttons = ttk.Frame(priority_group); priority_buttons.pack(fill="x", pady=2)
         ttk.Button(priority_buttons, text="Thêm bài hát ưu tiên", command=self._add_priority_songs).pack(side="left")
         ttk.Button(priority_buttons, text="Xóa khỏi danh sách ưu tiên", command=self._remove_priority_songs).pack(side="left", padx=6)
+        ttk.Button(priority_buttons, text="Random danh sách ưu tiên", command=self._shuffle_priority_songs).pack(side="left")
         self.priority_listbox = tk.Listbox(priority_group, height=4, selectmode=tk.EXTENDED)
         self.priority_listbox.pack(fill="x", pady=(2, 0))
 
@@ -157,13 +173,24 @@ class MusicMergeApp:
             path = Path(file)
             if path.suffix.lower() in MUSIC_EXTS and path not in self.priority_files:
                 self.priority_files.append(path)
-                self.priority_listbox.insert(tk.END, path.name)
+        self._refresh_priority_listbox()
 
     def _remove_priority_songs(self):
         selected = list(self.priority_listbox.curselection())
         for index in reversed(selected):
             self.priority_listbox.delete(index)
             del self.priority_files[index]
+        self._refresh_priority_listbox()
+
+    def _shuffle_priority_songs(self):
+        random.shuffle(self.priority_files)
+        self._refresh_priority_listbox()
+
+    def _refresh_priority_listbox(self):
+        self.priority_listbox.delete(0, tk.END)
+        for path in self.priority_files:
+            self.priority_listbox.insert(tk.END, path.name)
+        self.priority_total_label.set(f"Tổng số bài ưu tiên: {len(self.priority_files)}")
 
     def _check_ffmpeg_available(self, show_popup=True) -> bool:
         ok = shutil.which("ffmpeg") is not None and shutil.which("ffprobe") is not None
@@ -232,8 +259,27 @@ class MusicMergeApp:
             selected.append(pool.pop())
         return selected
 
+    def _select_priority_songs(self, priority_files: list[Path], count: int) -> list[Path]:
+        mode = self.priority_mode.get()
+        if count <= 0 or not priority_files:
+            return []
+        if mode == "ordered":
+            return [priority_files[i % len(priority_files)] for i in range(count)]
+        if mode == "full_random":
+            return [random.choice(priority_files) for _ in range(count)]
+
+        # Random không trùng: dùng hết danh sách rồi bắt đầu vòng mới nếu N quá lớn.
+        selected: list[Path] = []
+        pool: list[Path] = []
+        for _ in range(count):
+            if not pool:
+                pool = priority_files.copy()
+                random.shuffle(pool)
+            selected.append(pool.pop())
+        return selected
+
     def _select_songs(self, musics: list[Path], count: int) -> tuple[list[Path], list[bool], list[Path], list[Path]]:
-        """Chọn bài hát và đánh dấu bài ưu tiên cho TXT/log."""
+        """Chọn bài hát ưu tiên trước, sau đó chọn nhạc thường để đủ tổng số bài."""
         if not self.use_priority_list.get() or not self.priority_files:
             regular = self._select_regular_songs(musics, count)
             return regular, [False] * len(regular), [], regular
@@ -243,11 +289,8 @@ class MusicMergeApp:
             regular = self._select_regular_songs(musics, count)
             return regular, [False] * len(regular), [], regular
 
-        if count < len(valid_priority):
-            selected_priority = random.sample(valid_priority, count)
-            return selected_priority, [True] * len(selected_priority), selected_priority, []
-
-        selected_priority = valid_priority.copy()
+        priority_count = max(0, min(self.priority_song_count.get(), count))
+        selected_priority = self._select_priority_songs(valid_priority, priority_count)
         priority_keys = {p.resolve() for p in valid_priority}
         regular_library = [m for m in musics if m.resolve() not in priority_keys]
         if not regular_library:
@@ -424,6 +467,13 @@ class MusicMergeApp:
         if not music_files:
             messagebox.showwarning("Thiếu nhạc", "Không tìm thấy file nhạc hợp lệ.")
             return
+        total_songs = max(1, self.songs_per_video.get())
+        if self.use_priority_list.get() and self.priority_song_count.get() > total_songs:
+            self.priority_song_count.set(total_songs)
+            messagebox.showwarning(
+                "Điều chỉnh số bài ưu tiên",
+                "Số bài ưu tiên lớn hơn tổng số bài/video nên đã tự giảm bằng tổng số bài/video.",
+            )
 
         self.results.clear()
         self.result_text.delete("1.0", tk.END)
