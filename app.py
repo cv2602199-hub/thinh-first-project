@@ -11,7 +11,7 @@ from pathlib import Path
 import tkinter as tk
 from tkinter import filedialog, messagebox, ttk
 
-MUSIC_EXTS = {".mp3", ".wav", ".m4a", ".aac"}
+MUSIC_EXTS = {".mp3", ".wav", ".m4a", ".aac", ".flac"}
 VIDEO_EXTS = {".mp4", ".mov", ".mkv", ".avi"}
 
 
@@ -43,8 +43,10 @@ class MusicMergeApp:
         self.cut_video_if_longer = tk.BooleanVar(value=True)
         self.export_playlist_txt = tk.BooleanVar(value=True)
         self.normalize_audio_44k = tk.BooleanVar(value=True)
+        self.use_priority_list = tk.BooleanVar(value=True)
 
         self.video_files: list[Path] = []
+        self.priority_files: list[Path] = []
         self.results: list[ProcessResult] = []
         self.worker_queue: queue.Queue = queue.Queue()
         self.processing = False
@@ -73,7 +75,16 @@ class MusicMergeApp:
         ttk.Radiobutton(mode_group, text="Random hoàn toàn", variable=self.assignment_mode, value="full_random").pack(anchor="w")
         ttk.Radiobutton(mode_group, text="Theo thứ tự danh sách", variable=self.assignment_mode, value="ordered").pack(anchor="w")
 
-        cfg = ttk.LabelFrame(frame, text="4) Cấu hình playlist/video")
+        priority_group = ttk.LabelFrame(frame, text="4) Danh sách ưu tiên")
+        priority_group.pack(fill="x", pady=6)
+        ttk.Checkbutton(priority_group, text="Ưu tiên danh sách yêu thích", variable=self.use_priority_list).pack(anchor="w")
+        priority_buttons = ttk.Frame(priority_group); priority_buttons.pack(fill="x", pady=2)
+        ttk.Button(priority_buttons, text="Thêm bài hát ưu tiên", command=self._add_priority_songs).pack(side="left")
+        ttk.Button(priority_buttons, text="Xóa khỏi danh sách ưu tiên", command=self._remove_priority_songs).pack(side="left", padx=6)
+        self.priority_listbox = tk.Listbox(priority_group, height=4, selectmode=tk.EXTENDED)
+        self.priority_listbox.pack(fill="x", pady=(2, 0))
+
+        cfg = ttk.LabelFrame(frame, text="5) Cấu hình playlist/video")
         cfg.pack(fill="x", pady=6)
 
         row = ttk.Frame(cfg); row.pack(fill="x", pady=2)
@@ -91,7 +102,7 @@ class MusicMergeApp:
         ttk.Checkbutton(cfg, text="Xuất file TXT playlist", variable=self.export_playlist_txt).pack(anchor="w")
         ttk.Checkbutton(cfg, text="Chuẩn hóa audio về 44100 Hz (stereo)", variable=self.normalize_audio_44k).pack(anchor="w")
 
-        audio = ttk.LabelFrame(frame, text="5) Âm thanh")
+        audio = ttk.LabelFrame(frame, text="6) Âm thanh")
         audio.pack(fill="x", pady=6)
         ttk.Checkbutton(audio, text="Giữ âm thanh gốc của video", variable=self.keep_original_audio).pack(anchor="w")
         row = ttk.Frame(audio); row.pack(fill="x", pady=2)
@@ -135,6 +146,24 @@ class MusicMergeApp:
     def _clear_videos(self):
         self.video_files.clear()
         self.video_listbox.delete(0, tk.END)
+
+    def _add_priority_songs(self):
+        files = filedialog.askopenfilenames(
+            title="Thêm bài hát ưu tiên",
+            initialdir=self.music_folder.get() or None,
+            filetypes=[("Audio files", "*.mp3 *.wav *.m4a *.aac *.flac")],
+        )
+        for file in files:
+            path = Path(file)
+            if path.suffix.lower() in MUSIC_EXTS and path not in self.priority_files:
+                self.priority_files.append(path)
+                self.priority_listbox.insert(tk.END, path.name)
+
+    def _remove_priority_songs(self):
+        selected = list(self.priority_listbox.curselection())
+        for index in reversed(selected):
+            self.priority_listbox.delete(index)
+            del self.priority_files[index]
 
     def _check_ffmpeg_available(self, show_popup=True) -> bool:
         ok = shutil.which("ffmpeg") is not None and shutil.which("ffprobe") is not None
@@ -184,12 +213,16 @@ class MusicMergeApp:
                 return p
             i += 1
 
-    def _select_songs(self, musics: list[Path], count: int) -> list[Path]:
+    def _select_regular_songs(self, musics: list[Path], count: int) -> list[Path]:
         mode = self.assignment_mode.get()
+        if count <= 0:
+            return []
         if mode == "ordered":
             return [musics[i % len(musics)] for i in range(count)]
         if mode == "full_random":
             return [random.choice(musics) for _ in range(count)]
+
+        # Random không trùng lặp: dùng hết pool rồi tự vòng mới, không bị lỗi khi count lớn.
         selected: list[Path] = []
         pool: list[Path] = []
         for _ in range(count):
@@ -198,6 +231,31 @@ class MusicMergeApp:
                 random.shuffle(pool)
             selected.append(pool.pop())
         return selected
+
+    def _select_songs(self, musics: list[Path], count: int) -> tuple[list[Path], list[bool], list[Path], list[Path]]:
+        """Chọn bài hát và đánh dấu bài ưu tiên cho TXT/log."""
+        if not self.use_priority_list.get() or not self.priority_files:
+            regular = self._select_regular_songs(musics, count)
+            return regular, [False] * len(regular), [], regular
+
+        valid_priority = [p for p in self.priority_files if p.exists() and p.suffix.lower() in MUSIC_EXTS]
+        if not valid_priority:
+            regular = self._select_regular_songs(musics, count)
+            return regular, [False] * len(regular), [], regular
+
+        if count < len(valid_priority):
+            selected_priority = random.sample(valid_priority, count)
+            return selected_priority, [True] * len(selected_priority), selected_priority, []
+
+        selected_priority = valid_priority.copy()
+        priority_keys = {p.resolve() for p in valid_priority}
+        regular_library = [m for m in musics if m.resolve() not in priority_keys]
+        if not regular_library:
+            regular_library = musics
+        regular = self._select_regular_songs(regular_library, count - len(selected_priority))
+        songs = selected_priority + regular
+        is_priority = [True] * len(selected_priority) + [False] * len(regular)
+        return songs, is_priority, selected_priority, regular
 
     @staticmethod
     def _ts(seconds: float) -> str:
@@ -209,46 +267,81 @@ class MusicMergeApp:
     def _target_seconds(self) -> int:
         return max(0, self.target_hours.get()) * 3600 + max(0, self.target_minutes.get()) * 60
 
-    def _expand_to_target(self, songs: list[Path], durations: list[float], target_seconds: int) -> tuple[list[Path], list[float]]:
+    def _expand_to_target(self, songs: list[Path], durations: list[float], is_priority: list[bool], target_seconds: int) -> tuple[list[Path], list[float], list[bool]]:
         if target_seconds <= 0:
-            return songs, durations
+            return songs, durations, is_priority
         base_songs = songs.copy()
         base_durations = durations.copy()
+        base_is_priority = is_priority.copy()
         total = sum(durations)
         while total < target_seconds:
             songs.extend(base_songs)
             durations.extend(base_durations)
+            is_priority.extend(base_is_priority)
             total = sum(durations)
-        return songs, durations
+        return songs, durations, is_priority
 
     def _build_concat_file(self, songs: list[Path], txt_path: Path):
-        # Dùng ffconcat để nối file an toàn với đường dẫn có dấu/khoảng trắng.
+        # File concat chỉ trỏ tới các WAV tạm có cùng codec/sample-rate/channel,
+        # vì vậy có thể nối an toàn dù thư mục gốc trộn MP3/WAV/M4A/AAC/FLAC.
         with txt_path.open("w", encoding="utf-8") as f:
             f.write("ffconcat version 1.0\n")
             for s in songs:
                 escaped = str(s).replace("'", "'\\''")
                 f.write(f"file '{escaped}'\n")
 
-    def _write_playlist_txt(self, txt_path: Path, src_video: Path, out_video: Path, songs: list[Path], durations: list[float], total_seconds: float):
+    def _create_playlist_audio(self, songs: list[Path], temp_dir: Path) -> Path:
+        """Chuyển từng bài sang WAV 44100Hz stereo rồi nối thành 1 audio playlist."""
+        segment_paths: list[Path] = []
+        for index, song in enumerate(songs):
+            segment = temp_dir / f"segment_{index:05d}.wav"
+            convert_cmd = [
+                "ffmpeg",
+                "-y",
+                "-i",
+                str(song),
+                "-vn",
+                "-ac",
+                "2",
+                "-ar",
+                "44100",
+                str(segment),
+            ]
+            subprocess.run(convert_cmd, capture_output=True, text=True, check=True)
+            segment_paths.append(segment)
+
+        concat_list = temp_dir / "concat_list.txt"
+        playlist_wav = temp_dir / "playlist.wav"
+        self._build_concat_file(segment_paths, concat_list)
+        concat_cmd = ["ffmpeg", "-y", "-safe", "0", "-f", "concat", "-i", str(concat_list), "-vn", "-ac", "2", "-ar", "44100", str(playlist_wav)]
+        subprocess.run(concat_cmd, capture_output=True, text=True, check=True)
+        return playlist_wav
+
+    def _write_playlist_txt(self, txt_path: Path, src_video: Path, out_video: Path, songs: list[Path], durations: list[float], is_priority: list[bool], export_duration: float):
         lines = [
             f"Tên video gốc: {src_video.name}",
             f"Video xuất: {out_video.name}",
-            f"Tổng thời lượng: {self._ts(total_seconds)}",
+            f"Tổng thời lượng: {self._ts(export_duration)}",
             "",
             "Danh sách bài hát:",
         ]
-        cursor = 0.0
-        for song, dur in zip(songs, durations):
-            lines.append(f"{self._ts(cursor)} {song.name}")
-            cursor += dur
+        current_seconds = 0.0
+        for song, dur, priority in zip(songs, durations, is_priority):
+            # TXT chỉ ghi những bài thực sự bắt đầu trước khi video xuất kết thúc.
+            # Nếu bài cuối bị cắt giữa chừng, timestamp bắt đầu vẫn được giữ lại.
+            if current_seconds >= export_duration:
+                break
+            prefix = "[PRIORITY] " if priority else ""
+            lines.append(f"{self._ts(current_seconds)} {prefix}{song.name}")
+            current_seconds += dur
         txt_path.write_text("\n".join(lines), encoding="utf-8")
 
     def _process_one(self, video: Path, music_files: list[Path]) -> ProcessResult:
         temp_files: list[Path] = []
         try:
-            songs = self._select_songs(music_files, max(1, self.songs_per_video.get()))
+            songs, is_priority, used_priority, used_regular = self._select_songs(music_files, max(1, self.songs_per_video.get()))
             durations = [self._get_duration(s) for s in songs]
-            songs, durations = self._expand_to_target(songs, durations, self._target_seconds())
+            songs, durations, is_priority = self._expand_to_target(songs, durations, is_priority, self._target_seconds())
 
             playlist_duration = sum(durations)
             target_seconds = self._target_seconds()
@@ -258,22 +351,15 @@ class MusicMergeApp:
             playlist_txt = self._build_playlist_txt_path(video) if self.export_playlist_txt.get() else None
 
             self.worker_queue.put(("log", f"- Chọn {len(songs)} bài cho {video.name}"))
+            self.worker_queue.put(("log", f"- Danh sách ưu tiên: {len(self.priority_files)} bài."))
+            self.worker_queue.put(("log", "- Đã sử dụng ưu tiên: " + (", ".join([s.name for s in used_priority]) if used_priority else "Không có")))
+            self.worker_queue.put(("log", "- Đã random: " + (", ".join([s.name for s in used_regular[:10]]) + (" ..." if len(used_regular) > 10 else "") if used_regular else "Không có")))
             self.worker_queue.put(("log", f"- Tổng thời lượng playlist: {self._ts(output_duration)}"))
             self.worker_queue.put(("log", "- Danh sách bài: " + ", ".join([s.name for s in songs[:10]]) + (" ..." if len(songs) > 10 else "")))
 
             with tempfile.TemporaryDirectory(prefix="music_merge_") as td:
                 temp_dir = Path(td)
-                concat_list = temp_dir / "concat_list.txt"
-                playlist_wav = temp_dir / "playlist.wav"
-                temp_files.extend([concat_list, playlist_wav])
-
-                self._build_concat_file(songs, concat_list)
-
-                concat_cmd = ["ffmpeg", "-y", "-safe", "0", "-f", "concat", "-i", str(concat_list), "-vn"]
-                if self.normalize_audio_44k.get():
-                    concat_cmd += ["-ac", "2", "-ar", "44100"]
-                concat_cmd += [str(playlist_wav)]
-                subprocess.run(concat_cmd, capture_output=True, text=True, check=True)
+                playlist_wav = self._create_playlist_audio(songs, temp_dir)
 
                 video_duration = self._get_duration(video)
                 has_audio = self._video_has_audio_stream(video)
@@ -286,7 +372,12 @@ class MusicMergeApp:
 
                 loop_needed = self.loop_video_to_playlist.get() and output_duration > video_duration
                 stream_loop_value = str(max(0, math.ceil(output_duration / video_duration) - 1)) if loop_needed else "0"
+                if (not loop_needed) and video_duration > output_duration and not self.cut_video_if_longer.get():
+                    export_duration = video_duration
+                else:
+                    export_duration = output_duration
                 self.worker_queue.put(("log", f"- Đang loop video: {'Có' if loop_needed else 'Không'}"))
+                self.worker_queue.put(("log", f"- Thời lượng video xuất: {self._ts(export_duration)}"))
 
                 use_mix = self.keep_original_audio.get() and has_audio
                 if use_mix:
@@ -301,10 +392,7 @@ class MusicMergeApp:
                     cmd += ["-stream_loop", stream_loop_value]
                 cmd += ["-i", str(video), "-i", str(playlist_wav), "-filter_complex", filter_complex, "-map", "0:v:0", "-map", map_audio]
 
-                if (not loop_needed) and video_duration > output_duration and not self.cut_video_if_longer.get():
-                    cmd += ["-t", f"{video_duration}"]
-                else:
-                    cmd += ["-t", f"{output_duration}"]
+                cmd += ["-t", f"{export_duration}"]
 
                 cmd += ["-c:v", "copy", "-c:a", "aac"]
                 if self.normalize_audio_44k.get():
@@ -313,7 +401,7 @@ class MusicMergeApp:
                 subprocess.run(cmd, capture_output=True, text=True, check=True)
 
             if self.export_playlist_txt.get() and playlist_txt is not None:
-                self._write_playlist_txt(playlist_txt, video, out_video, songs, durations, output_duration)
+                self._write_playlist_txt(playlist_txt, video, out_video, songs, durations, is_priority, export_duration)
                 self.worker_queue.put(("log", f"- TXT playlist: {playlist_txt}"))
 
             self.worker_queue.put(("log", f"- Video xuất: {out_video}"))
